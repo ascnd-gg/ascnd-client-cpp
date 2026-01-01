@@ -1,0 +1,24 @@
+{
+  "name": "ascnd-client",
+  "version-semver": "1.0.0",
+  "description": "C++ client library for the Ascnd leaderboard API",
+  "homepage": "https://github.com/ascnd-gg/ascnd-client-cpp",
+  "license": "MIT",
+  "supports": "!uwp",
+  "dependencies": [
+    "nlohmann-json",
+    {
+      "name": "cpp-httplib",
+      "features": ["openssl"],
+      "platform": "!windows"
+    },
+    {
+      "name": "cpp-httplib",
+      "platform": "windows"
+    },
+    {
+      "name": "openssl",
+      "platform": "!windows"
+    }
+  ]
+}
