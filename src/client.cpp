@@ -115,8 +115,12 @@ public:
 
     ~Impl() {
         VLOG(1) << "Shutting down Ascnd client";
+        wait_for_pending();
+        VLOG(1) << "Client shutdown complete";
+    }
 
-        // Wait for all pending async operations to complete
+    // Wait for all pending async operations to complete
+    void wait_for_pending() {
         std::lock_guard<std::mutex> lock(pending_mutex);
         if (!pending_operations.empty()) {
             VLOG(1) << "Waiting for " << pending_operations.size()
@@ -131,8 +135,7 @@ public:
                 }
             }
         }
-
-        VLOG(1) << "Client shutdown complete";
+        pending_operations.clear();
     }
 
     // Add a pending operation and clean up completed ones
@@ -264,7 +267,15 @@ AscndClient::AscndClient(const std::string& server_address, const std::string& a
     impl_ = std::make_shared<Impl>(std::move(config));
 }
 
-AscndClient::~AscndClient() = default;
+AscndClient::~AscndClient() {
+    // Must wait for pending operations BEFORE releasing impl_,
+    // because async lambdas capture a copy of impl_ shared_ptr.
+    // Without this, ~Impl() wouldn't run until after lambdas complete,
+    // but we'd have already returned from this destructor.
+    if (impl_) {
+        impl_->wait_for_pending();
+    }
+}
 
 AscndClient::AscndClient(AscndClient&&) noexcept = default;
 AscndClient& AscndClient::operator=(AscndClient&&) noexcept = default;
