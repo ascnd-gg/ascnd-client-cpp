@@ -124,7 +124,11 @@ public:
         }
         for (auto& future : pending_operations) {
             if (future.valid()) {
-                future.wait();
+                try {
+                    future.wait();
+                } catch (...) {
+                    // Swallow exceptions - we're in destructor
+                }
             }
         }
 
@@ -251,13 +255,13 @@ public:
 };
 
 AscndClient::AscndClient(ClientConfig config)
-    : impl_(std::make_unique<Impl>(std::move(config))) {}
+    : impl_(std::make_shared<Impl>(std::move(config))) {}
 
 AscndClient::AscndClient(const std::string& server_address, const std::string& api_key) {
     ClientConfig config;
     config.server_address = server_address;
     config.api_key = api_key;
-    impl_ = std::make_unique<Impl>(std::move(config));
+    impl_ = std::make_shared<Impl>(std::move(config));
 }
 
 AscndClient::~AscndClient() = default;
@@ -354,9 +358,15 @@ void AscndClient::submit_score_async(
     const SubmitScoreRequest& request,
     AsyncCallback<SubmitScoreResponse> callback
 ) {
-    auto future = std::async(std::launch::async, [this, request, callback = std::move(callback)]() {
+    auto impl = impl_;  // Copy shared_ptr - ensures Impl outlives lambda
+    auto future = std::async(std::launch::async, [impl, request, callback = std::move(callback)]() {
         try {
-            auto result = submit_score(request);
+            auto result = impl->make_request<SubmitScoreRequest, SubmitScoreResponse>(
+                request,
+                [&impl](grpc::ClientContext* ctx, const SubmitScoreRequest& req, SubmitScoreResponse* resp) {
+                    return impl->stub->SubmitScore(ctx, req, resp);
+                }
+            );
             callback(std::move(result));
         } catch (const std::exception& e) {
             LOG(ERROR) << "Exception in async callback: " << e.what();
@@ -372,9 +382,15 @@ void AscndClient::get_leaderboard_async(
     const GetLeaderboardRequest& request,
     AsyncCallback<GetLeaderboardResponse> callback
 ) {
-    auto future = std::async(std::launch::async, [this, request, callback = std::move(callback)]() {
+    auto impl = impl_;  // Copy shared_ptr - ensures Impl outlives lambda
+    auto future = std::async(std::launch::async, [impl, request, callback = std::move(callback)]() {
         try {
-            auto result = get_leaderboard(request);
+            auto result = impl->make_request<GetLeaderboardRequest, GetLeaderboardResponse>(
+                request,
+                [&impl](grpc::ClientContext* ctx, const GetLeaderboardRequest& req, GetLeaderboardResponse* resp) {
+                    return impl->stub->GetLeaderboard(ctx, req, resp);
+                }
+            );
             callback(std::move(result));
         } catch (const std::exception& e) {
             LOG(ERROR) << "Exception in async callback: " << e.what();
@@ -389,9 +405,15 @@ void AscndClient::get_player_rank_async(
     const GetPlayerRankRequest& request,
     AsyncCallback<GetPlayerRankResponse> callback
 ) {
-    auto future = std::async(std::launch::async, [this, request, callback = std::move(callback)]() {
+    auto impl = impl_;  // Copy shared_ptr - ensures Impl outlives lambda
+    auto future = std::async(std::launch::async, [impl, request, callback = std::move(callback)]() {
         try {
-            auto result = get_player_rank(request);
+            auto result = impl->make_request<GetPlayerRankRequest, GetPlayerRankResponse>(
+                request,
+                [&impl](grpc::ClientContext* ctx, const GetPlayerRankRequest& req, GetPlayerRankResponse* resp) {
+                    return impl->stub->GetPlayerRank(ctx, req, resp);
+                }
+            );
             callback(std::move(result));
         } catch (const std::exception& e) {
             LOG(ERROR) << "Exception in async callback: " << e.what();
