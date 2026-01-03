@@ -2,7 +2,7 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO ascnd-gg/ascnd-client-cpp
     REF "v${VERSION}"
-    SHA512 0  # Will be updated when publishing
+    SHA512 7eb9dbd5804d687a6825ffd81f3a570a3e0c8e079f2fc56c7a117ada3f534b1ff6445eb4785f61855c3e8163fcc1aa89643164274017e28527933556ad0bd434
     HEAD_REF main
 )
 
