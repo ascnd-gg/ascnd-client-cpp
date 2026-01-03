@@ -183,28 +183,52 @@ if (result.is_ok()) {
     std::cout << "Score ID: " << response.score_id() << std::endl;
     std::cout << "Rank: " << response.rank() << std::endl;
     std::cout << "New best: " << response.is_new_best() << std::endl;
-    std::cout << "Global rank: " << response.global_rank() << std::endl;
+
+    // Check anticheat result (if enabled)
+    if (response.has_anticheat()) {
+        if (response.anticheat().passed()) {
+            std::cout << "Anticheat: passed" << std::endl;
+        } else {
+            std::cout << "Anticheat action: " << response.anticheat().action() << std::endl;
+        }
+    }
 }
 ```
 
 ### Getting Leaderboards
 
 ```cpp
-// Build request with pagination
+// Build request with pagination and optional view filtering
 ascnd::GetLeaderboardRequest req;
 req.set_leaderboard_id("high-scores");
 req.set_limit(25);
-req.set_offset(50);
+req.set_offset(0);
 req.set_period("current");
+req.set_view_slug("na-region");  // Optional: filter by metadata view
 
 auto result = client.get_leaderboard(req);
 
 if (result.is_ok()) {
     const auto& response = result.value();
+
+    std::cout << "Period: " << response.period_start() << std::endl;
+    std::cout << "Total entries: " << response.total_entries() << std::endl;
+
+    // View info (when filtering by view_slug)
+    if (response.has_view()) {
+        std::cout << "Viewing: " << response.view().name() << std::endl;
+    }
+
     for (const auto& entry : response.entries()) {
         std::cout << "#" << entry.rank() << " "
                   << entry.player_id() << " - "
                   << entry.score() << std::endl;
+
+        // Bracket info (if enabled)
+        if (entry.has_bracket()) {
+            std::cout << "  Bracket: " << entry.bracket().name()
+                      << " (" << entry.bracket().color() << ")" << std::endl;
+        }
     }
 }
 ```
@@ -215,6 +239,8 @@ if (result.is_ok()) {
 ascnd::GetPlayerRankRequest req;
 req.set_leaderboard_id("high-scores");
 req.set_player_id("player123");
+req.set_period("current");
+req.set_view_slug("na-region");  // Optional: filter by metadata view
 
 auto result = client.get_player_rank(req);
 
@@ -222,7 +248,25 @@ if (result.is_ok()) {
     const auto& response = result.value();
     if (response.has_rank()) {
         std::cout << "Rank: " << response.rank() << std::endl;
+        std::cout << "Score: " << response.score() << std::endl;
+        std::cout << "Best score: " << response.best_score() << std::endl;
         std::cout << "Percentile: " << response.percentile() << std::endl;
+
+        // Bracket info (if enabled)
+        if (response.has_bracket()) {
+            std::cout << "Bracket: " << response.bracket().name()
+                      << " (" << response.bracket().color() << ")" << std::endl;
+        }
+
+        // View info (when filtering by view_slug)
+        if (response.has_view()) {
+            std::cout << "View: " << response.view().name() << std::endl;
+        }
+
+        // Global rank (overall rank when filtering by view)
+        if (response.has_global_rank()) {
+            std::cout << "Global rank: " << response.global_rank() << std::endl;
+        }
     } else {
         std::cout << "Player not on leaderboard" << std::endl;
     }
@@ -247,8 +291,8 @@ if (result.is_ok()) {
 
         // Check for specific violations
         for (const auto& violation : response.anticheat().violations()) {
-            std::cout << "Violation: " << violation.code() << " - "
-                      << violation.message() << std::endl;
+            std::cout << "Violation: " << violation.flag_type() << " - "
+                      << violation.reason() << std::endl;
         }
     }
 }
@@ -301,20 +345,26 @@ if (result.is_ok()) {
 
 ### Global Rank
 
-Track a player's all-time global ranking:
+When filtering by a metadata view, the global rank shows the player's overall position across all views:
 
 ```cpp
-ascnd::SubmitScoreRequest req;
+// Get player rank within a view AND their global rank
+ascnd::GetPlayerRankRequest req;
 req.set_leaderboard_id("high-scores");
 req.set_player_id("player123");
-req.set_score(25000);
+req.set_view_slug("warrior-class");  // Filter by character class
 
-auto result = client.submit_score(req);
+auto result = client.get_player_rank(req);
 
 if (result.is_ok()) {
     const auto& response = result.value();
-    std::cout << "Period rank: " << response.rank() << std::endl;
-    std::cout << "Global rank: " << response.global_rank() << std::endl;
+    if (response.has_rank()) {
+        std::cout << "View rank: " << response.rank() << std::endl;  // Rank within warriors
+
+        if (response.has_global_rank()) {
+            std::cout << "Global rank: " << response.global_rank() << std::endl;  // Rank across all classes
+        }
+    }
 }
 ```
 
@@ -367,7 +417,7 @@ auto response = result.value_or(default_response);
 
 ## Links
 
-- [Documentation](https://ascnd.gg/docs/sdks/cpp)
+- [Documentation](https://docs.ascnd.gg/sdks/cpp)
 - [GitHub](https://github.com/ascnd-gg/ascnd-client-cpp)
 - [Examples](https://github.com/ascnd-gg/ascnd-client-cpp/tree/main/examples)
 
