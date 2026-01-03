@@ -1,0 +1,13 @@
+{
+  "name": "ascnd-client",
+  "version-semver": "1.0.0",
+  "description": "C++ client library for the Ascnd leaderboard API",
+  "dependencies": [
+    {
+      "name": "grpc",
+      "default-features": false
+    },
+    "protobuf",
+    "glog"
+  ]
+}
