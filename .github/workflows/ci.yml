@@ -24,10 +24,13 @@ jobs:
         run: brew install openssl@3
 
       - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DASCND_BUILD_TESTS=ON
 
       - name: Build
         run: cmake --build build --config Release
 
       - name: Build Examples
         run: cmake --build build --target ascnd-example --config Release
+
+      - name: Run Tests
+        run: ctest --test-dir build --output-on-failure -C Release

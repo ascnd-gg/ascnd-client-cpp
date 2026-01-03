@@ -2,7 +2,7 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO ascnd-gg/ascnd-client-cpp
     REF "v${VERSION}"
-    SHA512 0
+    SHA512 0  # Will be updated when publishing
     HEAD_REF main
 )
 
@@ -10,8 +10,8 @@ vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
         -DASCND_BUILD_EXAMPLES=OFF
-        -DASCND_USE_SYSTEM_JSON=ON
-        -DASCND_USE_SYSTEM_HTTPLIB=ON
+        -DASCND_BUILD_TESTS=OFF
+        -DASCND_INSTALL=ON
 )
 
 vcpkg_cmake_install()

@@ -1,149 +1,264 @@
 /**
  * @file client.cpp
- * @brief Implementation of the Ascnd API client
- *
- * This file provides the non-header-only implementation of AscndClient.
- * When ASCND_HEADER_ONLY is defined, the implementation in client.hpp is used instead.
+ * @brief Implementation of the Ascnd gRPC API client
  */
 
-#ifndef ASCND_HEADER_ONLY
-
 #include "ascnd/client.hpp"
-#include <httplib.h>
-#include <thread>
+
+#include <grpcpp/grpcpp.h>
+#include <glog/logging.h>
+
+#include <algorithm>
 #include <atomic>
+#include <future>
+#include <mutex>
+#include <thread>
 
 namespace ascnd {
+
+// ============================================================================
+// Logging Implementation
+// ============================================================================
+
+namespace {
+
+// Thread-safe once flag for logging initialization
+std::once_flag g_logging_init_flag;
+std::atomic<bool> g_logging_initialized{false};
+
+void DoInitLogging(const LoggingOptions& options) {
+    // Initialize GLOG with program name
+    google::InitGoogleLogging(options.program_name.c_str());
+
+    // Configure stderr-only logging (no log files)
+    FLAGS_logtostderr = true;
+    FLAGS_alsologtostderr = false;
+    FLAGS_stderrthreshold = 0;  // Log all levels to stderr
+
+    // Set minimum log level based on options
+    switch (options.min_level) {
+        case LogLevel::kError:
+            FLAGS_minloglevel = google::GLOG_ERROR;
+            FLAGS_v = 0;
+            break;
+        case LogLevel::kWarning:
+            FLAGS_minloglevel = google::GLOG_WARNING;
+            FLAGS_v = 0;
+            break;
+        case LogLevel::kInfo:
+            FLAGS_minloglevel = google::GLOG_INFO;
+            FLAGS_v = 0;
+            break;
+        case LogLevel::kDebug:
+            FLAGS_minloglevel = google::GLOG_INFO;
+            FLAGS_v = 1;  // Enable VLOG(1) for debug
+            break;
+    }
+
+    // Color output (may not work on all terminals)
+    FLAGS_colorlogtostderr = options.colorize;
+
+    g_logging_initialized = true;
+}
+
+void EnsureLoggingInitialized() {
+    std::call_once(g_logging_init_flag, []() {
+        DoInitLogging(LoggingOptions{});
+    });
+}
+
+}  // anonymous namespace
+
+void InitLogging(const LoggingOptions& options) {
+    std::call_once(g_logging_init_flag, [&options]() {
+        DoInitLogging(options);
+    });
+}
+
+void ShutdownLogging() {
+    bool expected = true;
+    if (g_logging_initialized.compare_exchange_strong(expected, false)) {
+        google::ShutdownGoogleLogging();
+    }
+}
+
+// ============================================================================
+// Client Implementation
+// ============================================================================
 
 class AscndClient::Impl {
 public:
     ClientConfig config;
-    std::unique_ptr<httplib::Client> http_client;
+    std::shared_ptr<grpc::Channel> channel;
+    std::unique_ptr<::ascnd::v1::AscndService::Stub> stub;
     mutable std::mutex mutex;
 
+    // Track pending async operations for proper cleanup
+    std::vector<std::future<void>> pending_operations;
+    std::mutex pending_mutex;
+
     explicit Impl(ClientConfig cfg) : config(std::move(cfg)) {
-        init_client();
+        config.validate();  // Throws std::invalid_argument on invalid config
+
+        // Auto-initialize logging if not already done
+        EnsureLoggingInitialized();
+
+        // If verbose mode is enabled, increase VLOG level
+        if (config.verbose) {
+            FLAGS_v = 1;
+            VLOG(1) << "Ascnd client verbose mode enabled";
+        }
+
+        LOG(INFO) << "Initializing Ascnd client for " << config.server_address;
+        init_channel();
     }
 
-    void init_client() {
-        // Parse URL to extract host
-        std::string url = config.base_url;
+    ~Impl() {
+        VLOG(1) << "Shutting down Ascnd client";
 
-        // Remove trailing slash
-        while (!url.empty() && url.back() == '/') {
-            url.pop_back();
+        // Wait for all pending async operations to complete
+        std::lock_guard<std::mutex> lock(pending_mutex);
+        if (!pending_operations.empty()) {
+            VLOG(1) << "Waiting for " << pending_operations.size()
+                    << " pending async operations";
+        }
+        for (auto& future : pending_operations) {
+            if (future.valid()) {
+                future.wait();
+            }
         }
 
-        http_client = std::make_unique<httplib::Client>(url);
+        VLOG(1) << "Client shutdown complete";
+    }
 
-        // Configure timeouts
-        http_client->set_connection_timeout(
-            std::chrono::milliseconds(config.connection_timeout_ms)
+    // Add a pending operation and clean up completed ones
+    void add_pending_operation(std::future<void> op) {
+        std::lock_guard<std::mutex> lock(pending_mutex);
+        // Clean up completed operations
+        pending_operations.erase(
+            std::remove_if(pending_operations.begin(), pending_operations.end(),
+                [](std::future<void>& f) {
+                    return !f.valid() || f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+                }),
+            pending_operations.end()
         );
-        http_client->set_read_timeout(
-            std::chrono::milliseconds(config.read_timeout_ms)
-        );
-        http_client->set_write_timeout(
-            std::chrono::milliseconds(config.write_timeout_ms)
-        );
+        // Add new operation
+        pending_operations.push_back(std::move(op));
+    }
 
-        // Set default headers
-        httplib::Headers headers;
-        headers.emplace("Content-Type", "application/json");
-        headers.emplace("Accept", "application/json");
+    void init_channel() {
+        std::shared_ptr<grpc::ChannelCredentials> creds;
 
-        if (!config.api_key.empty()) {
-            headers.emplace("Authorization", "Bearer " + config.api_key);
+        if (config.use_ssl) {
+            VLOG(1) << "Creating SSL channel to " << config.server_address;
+            creds = grpc::SslCredentials(grpc::SslCredentialsOptions());
+        } else {
+            LOG(WARNING) << "Creating insecure channel to " << config.server_address
+                         << " (SSL disabled)";
+            creds = grpc::InsecureChannelCredentials();
         }
+
+        // Set channel arguments
+        grpc::ChannelArguments args;
 
         if (!config.user_agent.empty()) {
-            headers.emplace("User-Agent", config.user_agent);
+            args.SetUserAgentPrefix(config.user_agent);
         } else {
-            headers.emplace("User-Agent", "ascnd-cpp-client/1.0.0");
+            args.SetUserAgentPrefix("ascnd-cpp-client/1.0.0");
         }
 
-        http_client->set_default_headers(headers);
+        // Create channel
+        channel = grpc::CreateCustomChannel(config.server_address, creds, args);
+        stub = ::ascnd::v1::AscndService::NewStub(channel);
+
+        VLOG(1) << "Channel created successfully";
     }
 
-    template<typename ResponseT>
-    Result<ResponseT> make_request(
-        const std::string& method,
-        const std::string& path,
-        const json& body = json{}
-    ) {
+    std::unique_ptr<grpc::ClientContext> create_context() {
+        auto context = std::make_unique<grpc::ClientContext>();
+
+        // Set deadline
+        auto deadline = std::chrono::system_clock::now() +
+                        std::chrono::milliseconds(config.request_timeout_ms);
+        context->set_deadline(deadline);
+
+        // Add API key as metadata
+        if (!config.api_key.empty()) {
+            context->AddMetadata("authorization", "Bearer " + config.api_key);
+        }
+
+        return context;
+    }
+
+    template<typename RequestT, typename ResponseT, typename RpcFunc>
+    Result<ResponseT> make_request(const RequestT& request, RpcFunc rpc_func) {
         std::lock_guard<std::mutex> lock(mutex);
 
-        httplib::Result result;
-        std::string body_str = body.empty() ? "" : body.dump();
+        VLOG(1) << "Starting request (max retries: " << config.max_retries << ")";
+
+        ResponseT response;
+        grpc::Status status;
 
         int retries = 0;
         while (retries <= config.max_retries) {
-            if (method == "POST") {
-                result = http_client->Post(path, body_str, "application/json");
-            } else if (method == "GET") {
-                result = http_client->Get(path);
-            } else {
-                return Result<ResponseT>::error("Unsupported HTTP method: " + method);
+            auto context = create_context();
+            status = rpc_func(context.get(), request, &response);
+
+            if (status.ok()) {
+                VLOG(1) << "Request succeeded on attempt " << (retries + 1);
+                return Result<ResponseT>::ok(std::move(response));
             }
 
-            if (result) {
+            // Only retry on transient errors
+            if (!is_retryable_error(status.error_code())) {
+                LOG(ERROR) << "Request failed with non-retryable error: "
+                           << status.error_message()
+                           << " (code: " << static_cast<int>(status.error_code()) << ")";
                 break;
             }
 
-            // Retry on connection errors
             if (retries < config.max_retries) {
                 int delay = config.retry_delay_ms * (1 << retries);
+                LOG(WARNING) << "Request failed with retryable error: "
+                             << status.error_message()
+                             << ", retrying in " << delay << "ms"
+                             << " (attempt " << (retries + 1) << "/" << config.max_retries << ")";
                 std::this_thread::sleep_for(std::chrono::milliseconds(delay));
             }
             ++retries;
         }
 
-        if (!result) {
-            return Result<ResponseT>::error(
-                "HTTP request failed: " + httplib::to_string(result.error()),
-                static_cast<int>(result.error())
-            );
+        LOG(ERROR) << "Request failed after " << retries << " attempts: "
+                   << status.error_message();
+
+        return Result<ResponseT>::error(
+            status.error_message(),
+            static_cast<int>(status.error_code())
+        );
+    }
+
+    static bool is_retryable_error(grpc::StatusCode code) {
+        switch (code) {
+            case grpc::StatusCode::UNAVAILABLE:
+            case grpc::StatusCode::DEADLINE_EXCEEDED:
+            case grpc::StatusCode::RESOURCE_EXHAUSTED:
+            case grpc::StatusCode::ABORTED:
+                return true;
+            default:
+                return false;
         }
-
-        auto& response = result.value();
-
-        if (response.status >= 200 && response.status < 300) {
-            try {
-                auto json_response = json::parse(response.body);
-                return Result<ResponseT>::ok(json_response.get<ResponseT>());
-            } catch (const json::exception& e) {
-                return Result<ResponseT>::error(
-                    std::string("JSON parse error: ") + e.what(),
-                    response.status
-                );
-            }
-        }
-
-        // Handle error response
-        std::string error_msg;
-        try {
-            auto error_json = json::parse(response.body);
-            if (error_json.contains("message")) {
-                error_msg = error_json["message"].get<std::string>();
-            } else if (error_json.contains("error")) {
-                error_msg = error_json["error"].get<std::string>();
-            } else {
-                error_msg = response.body;
-            }
-        } catch (...) {
-            error_msg = response.body.empty() ?
-                "HTTP " + std::to_string(response.status) : response.body;
-        }
-
-        return Result<ResponseT>::error(error_msg, response.status);
     }
 };
 
 AscndClient::AscndClient(ClientConfig config)
     : impl_(std::make_unique<Impl>(std::move(config))) {}
 
-AscndClient::AscndClient(const std::string& base_url, const std::string& api_key)
-    : impl_(std::make_unique<Impl>(ClientConfig{base_url, api_key})) {}
+AscndClient::AscndClient(const std::string& server_address, const std::string& api_key) {
+    ClientConfig config;
+    config.server_address = server_address;
+    config.api_key = api_key;
+    impl_ = std::make_unique<Impl>(std::move(config));
+}
 
 AscndClient::~AscndClient() = default;
 
@@ -151,39 +266,30 @@ AscndClient::AscndClient(AscndClient&&) noexcept = default;
 AscndClient& AscndClient::operator=(AscndClient&&) noexcept = default;
 
 Result<SubmitScoreResponse> AscndClient::submit_score(const SubmitScoreRequest& request) {
-    json body = request;
-    return impl_->make_request<SubmitScoreResponse>("POST", "/v1/scores", body);
+    return impl_->make_request<SubmitScoreRequest, SubmitScoreResponse>(
+        request,
+        [this](grpc::ClientContext* ctx, const SubmitScoreRequest& req, SubmitScoreResponse* resp) {
+            return impl_->stub->SubmitScore(ctx, req, resp);
+        }
+    );
 }
 
 Result<GetLeaderboardResponse> AscndClient::get_leaderboard(const GetLeaderboardRequest& request) {
-    std::string path = "/v1/leaderboards/" + request.leaderboard_id;
-    std::string query;
-
-    if (request.limit.has_value()) {
-        query += (query.empty() ? "?" : "&");
-        query += "limit=" + std::to_string(request.limit.value());
-    }
-    if (request.offset.has_value()) {
-        query += (query.empty() ? "?" : "&");
-        query += "offset=" + std::to_string(request.offset.value());
-    }
-    if (request.period.has_value()) {
-        query += (query.empty() ? "?" : "&");
-        query += "period=" + request.period.value();
-    }
-
-    return impl_->make_request<GetLeaderboardResponse>("GET", path + query);
+    return impl_->make_request<GetLeaderboardRequest, GetLeaderboardResponse>(
+        request,
+        [this](grpc::ClientContext* ctx, const GetLeaderboardRequest& req, GetLeaderboardResponse* resp) {
+            return impl_->stub->GetLeaderboard(ctx, req, resp);
+        }
+    );
 }
 
 Result<GetPlayerRankResponse> AscndClient::get_player_rank(const GetPlayerRankRequest& request) {
-    std::string path = "/v1/leaderboards/" + request.leaderboard_id +
-                       "/players/" + request.player_id;
-
-    if (request.period.has_value()) {
-        path += "?period=" + request.period.value();
-    }
-
-    return impl_->make_request<GetPlayerRankResponse>("GET", path);
+    return impl_->make_request<GetPlayerRankRequest, GetPlayerRankResponse>(
+        request,
+        [this](grpc::ClientContext* ctx, const GetPlayerRankRequest& req, GetPlayerRankResponse* resp) {
+            return impl_->stub->GetPlayerRank(ctx, req, resp);
+        }
+    );
 }
 
 Result<SubmitScoreResponse> AscndClient::submit_score(
@@ -192,9 +298,9 @@ Result<SubmitScoreResponse> AscndClient::submit_score(
     int64_t score
 ) {
     SubmitScoreRequest request;
-    request.leaderboard_id = leaderboard_id;
-    request.player_id = player_id;
-    request.score = score;
+    request.set_leaderboard_id(leaderboard_id);
+    request.set_player_id(player_id);
+    request.set_score(score);
     return submit_score(request);
 }
 
@@ -203,8 +309,8 @@ Result<GetLeaderboardResponse> AscndClient::get_leaderboard(
     int32_t limit
 ) {
     GetLeaderboardRequest request;
-    request.leaderboard_id = leaderboard_id;
-    request.limit = limit;
+    request.set_leaderboard_id(leaderboard_id);
+    request.set_limit(limit);
     return get_leaderboard(request);
 }
 
@@ -213,57 +319,118 @@ Result<GetPlayerRankResponse> AscndClient::get_player_rank(
     const std::string& player_id
 ) {
     GetPlayerRankRequest request;
-    request.leaderboard_id = leaderboard_id;
-    request.player_id = player_id;
+    request.set_leaderboard_id(leaderboard_id);
+    request.set_player_id(player_id);
     return get_player_rank(request);
 }
 
+// Future-based async methods
+std::future<Result<SubmitScoreResponse>> AscndClient::submit_score_async(
+    const SubmitScoreRequest& request
+) {
+    return std::async(std::launch::async, [this, request]() {
+        return submit_score(request);
+    });
+}
+
+std::future<Result<GetLeaderboardResponse>> AscndClient::get_leaderboard_async(
+    const GetLeaderboardRequest& request
+) {
+    return std::async(std::launch::async, [this, request]() {
+        return get_leaderboard(request);
+    });
+}
+
+std::future<Result<GetPlayerRankResponse>> AscndClient::get_player_rank_async(
+    const GetPlayerRankRequest& request
+) {
+    return std::async(std::launch::async, [this, request]() {
+        return get_player_rank(request);
+    });
+}
+
+// Callback-based async methods (tracked for proper lifecycle management)
 void AscndClient::submit_score_async(
     const SubmitScoreRequest& request,
     AsyncCallback<SubmitScoreResponse> callback
 ) {
-    std::thread([this, request, callback = std::move(callback)]() {
-        auto result = submit_score(request);
-        callback(std::move(result));
-    }).detach();
+    auto future = std::async(std::launch::async, [this, request, callback = std::move(callback)]() {
+        try {
+            auto result = submit_score(request);
+            callback(std::move(result));
+        } catch (const std::exception& e) {
+            LOG(ERROR) << "Exception in async callback: " << e.what();
+        } catch (...) {
+            LOG(ERROR) << "Unknown exception in async callback";
+        }
+    });
+    // Track the operation so destructor waits for completion
+    impl_->add_pending_operation(std::move(future));
 }
 
 void AscndClient::get_leaderboard_async(
     const GetLeaderboardRequest& request,
     AsyncCallback<GetLeaderboardResponse> callback
 ) {
-    std::thread([this, request, callback = std::move(callback)]() {
-        auto result = get_leaderboard(request);
-        callback(std::move(result));
-    }).detach();
+    auto future = std::async(std::launch::async, [this, request, callback = std::move(callback)]() {
+        try {
+            auto result = get_leaderboard(request);
+            callback(std::move(result));
+        } catch (const std::exception& e) {
+            LOG(ERROR) << "Exception in async callback: " << e.what();
+        } catch (...) {
+            LOG(ERROR) << "Unknown exception in async callback";
+        }
+    });
+    impl_->add_pending_operation(std::move(future));
 }
 
 void AscndClient::get_player_rank_async(
     const GetPlayerRankRequest& request,
     AsyncCallback<GetPlayerRankResponse> callback
 ) {
-    std::thread([this, request, callback = std::move(callback)]() {
-        auto result = get_player_rank(request);
-        callback(std::move(result));
-    }).detach();
+    auto future = std::async(std::launch::async, [this, request, callback = std::move(callback)]() {
+        try {
+            auto result = get_player_rank(request);
+            callback(std::move(result));
+        } catch (const std::exception& e) {
+            LOG(ERROR) << "Exception in async callback: " << e.what();
+        } catch (...) {
+            LOG(ERROR) << "Unknown exception in async callback";
+        }
+    });
+    impl_->add_pending_operation(std::move(future));
 }
 
 void AscndClient::set_api_key(const std::string& api_key) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->config.api_key = api_key;
-    impl_->init_client();
 }
 
-const ClientConfig& AscndClient::config() const noexcept {
+ClientConfig AscndClient::config() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->config;
 }
 
 bool AscndClient::ping() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    auto result = impl_->http_client->Get("/health");
-    return result && result->status >= 200 && result->status < 300;
+
+    VLOG(1) << "Testing connection to " << impl_->config.server_address;
+
+    // Wait for channel to be ready with timeout
+    auto deadline = std::chrono::system_clock::now() +
+                    std::chrono::milliseconds(impl_->config.connection_timeout_ms);
+
+    bool connected = impl_->channel->WaitForConnected(deadline);
+
+    if (connected) {
+        VLOG(1) << "Connection successful";
+    } else {
+        LOG(WARNING) << "Connection to " << impl_->config.server_address
+                     << " timed out after " << impl_->config.connection_timeout_ms << "ms";
+    }
+
+    return connected;
 }
 
 } // namespace ascnd
-
-#endif // ASCND_HEADER_ONLY

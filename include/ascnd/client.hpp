@@ -4,43 +4,115 @@
  * @file client.hpp
  * @brief Ascnd API client for C++ games
  *
- * Thread-safe client for interacting with the Ascnd leaderboard API.
+ * Thread-safe gRPC client for interacting with the Ascnd leaderboard API.
  * Designed for use in game engines like Unreal Engine and custom game projects.
  */
 
 #include "types.hpp"
+#include "ascnd.grpc.pb.h"
 
 #include <string>
 #include <memory>
 #include <mutex>
 #include <functional>
 #include <chrono>
+#include <future>
+#include <stdexcept>
 
-// Forward declare httplib types to avoid header pollution
-namespace httplib {
-    class Client;
-}
+#include <grpcpp/grpcpp.h>
 
 namespace ascnd {
+
+// ============================================================================
+// Logging API
+// ============================================================================
+
+/**
+ * @brief Log level for the SDK
+ *
+ * Controls the verbosity of logging output.
+ */
+enum class LogLevel {
+    kError = 0,    ///< Only errors
+    kWarning = 1,  ///< Errors and warnings
+    kInfo = 2,     ///< Normal operational messages
+    kDebug = 3     ///< Detailed debug information (requires verbose=true)
+};
+
+/**
+ * @brief Logging initialization options
+ */
+struct LoggingOptions {
+    /// Minimum log level to output (default: kInfo)
+    LogLevel min_level = LogLevel::kInfo;
+
+    /// Program name for log prefix (default: "ascnd")
+    std::string program_name = "ascnd";
+
+    /// Enable colorized stderr output (default: true)
+    bool colorize = true;
+};
+
+/**
+ * @brief Initialize logging with custom options
+ *
+ * Call this function before creating any AscndClient instances to customize
+ * logging behavior. If not called, logging will be auto-initialized with
+ * sensible defaults when the first client is created.
+ *
+ * This function is thread-safe and can only be called once; subsequent calls
+ * are ignored.
+ *
+ * @note Logging can only be initialized once per process. Calling
+ *       ShutdownLogging() followed by InitLogging() will NOT re-initialize
+ *       logging - the subsequent InitLogging() call is silently ignored.
+ *       This is due to the use of std::call_once for thread-safety.
+ *
+ * @param options Logging configuration options
+ *
+ * Example:
+ * @code
+ * ascnd::LoggingOptions opts;
+ * opts.min_level = ascnd::LogLevel::kDebug;
+ * opts.program_name = "my_game";
+ * ascnd::InitLogging(opts);
+ *
+ * // Now create clients
+ * ascnd::AscndClient client(config);
+ * @endcode
+ */
+void InitLogging(const LoggingOptions& options = LoggingOptions{});
+
+/**
+ * @brief Shutdown logging
+ *
+ * Call this before program exit to flush log buffers.
+ * Safe to call multiple times.
+ */
+void ShutdownLogging();
+
+// ============================================================================
+// Client Configuration
+// ============================================================================
 
 /**
  * @brief Configuration options for AscndClient
  */
 struct ClientConfig {
-    /// Base URL of the Ascnd API (e.g., "https://api.ascnd.gg")
-    std::string base_url;
+    /// gRPC server address (e.g., "api.ascnd.gg:443")
+    std::string server_address;
 
-    /// API key for authentication
+    /// API key for authentication (sent as metadata)
     std::string api_key;
+
+    /// Whether to use SSL/TLS (default: true)
+    bool use_ssl = true;
 
     /// Connection timeout in milliseconds (default: 5000)
     int connection_timeout_ms = 5000;
 
-    /// Read timeout in milliseconds (default: 10000)
-    int read_timeout_ms = 10000;
-
-    /// Write timeout in milliseconds (default: 10000)
-    int write_timeout_ms = 10000;
+    /// Request deadline in milliseconds (default: 10000)
+    int request_timeout_ms = 10000;
 
     /// Number of retry attempts on transient failures (default: 3)
     int max_retries = 3;
@@ -53,6 +125,28 @@ struct ClientConfig {
 
     /// Enable verbose logging (default: false)
     bool verbose = false;
+
+    /**
+     * @brief Validate the configuration
+     * @throws std::invalid_argument if configuration is invalid
+     */
+    void validate() const {
+        if (server_address.empty()) {
+            throw std::invalid_argument("server_address cannot be empty");
+        }
+        if (connection_timeout_ms <= 0) {
+            throw std::invalid_argument("connection_timeout_ms must be positive");
+        }
+        if (request_timeout_ms <= 0) {
+            throw std::invalid_argument("request_timeout_ms must be positive");
+        }
+        if (max_retries < 0) {
+            throw std::invalid_argument("max_retries cannot be negative");
+        }
+        if (retry_delay_ms < 0) {
+            throw std::invalid_argument("retry_delay_ms cannot be negative");
+        }
+    }
 };
 
 /**
@@ -62,7 +156,7 @@ template<typename T>
 using AsyncCallback = std::function<void(Result<T>)>;
 
 /**
- * @brief Thread-safe client for the Ascnd leaderboard API
+ * @brief Thread-safe gRPC client for the Ascnd leaderboard API
  *
  * This client provides both synchronous and asynchronous methods
  * for interacting with the Ascnd API. All methods are thread-safe.
@@ -70,20 +164,20 @@ using AsyncCallback = std::function<void(Result<T>)>;
  * Example usage:
  * @code
  * ascnd::ClientConfig config;
- * config.base_url = "https://api.ascnd.gg";
+ * config.server_address = "api.ascnd.gg:443";
  * config.api_key = "your-api-key";
  *
  * ascnd::AscndClient client(config);
  *
  * // Submit a score
  * ascnd::SubmitScoreRequest req;
- * req.leaderboard_id = "high-scores";
- * req.player_id = "player123";
- * req.score = 1000;
+ * req.set_leaderboard_id("high-scores");
+ * req.set_player_id("player123");
+ * req.set_score(1000);
  *
  * auto result = client.submit_score(req);
  * if (result.is_ok()) {
- *     std::cout << "Rank: " << result.value().rank << std::endl;
+ *     std::cout << "Rank: " << result.value().rank() << std::endl;
  * }
  * @endcode
  */
@@ -96,13 +190,19 @@ public:
     explicit AscndClient(ClientConfig config);
 
     /**
-     * @brief Construct a client with base URL and API key
-     * @param base_url Base URL of the API
+     * @brief Construct a client with server address and API key
+     * @param server_address gRPC server address (e.g., "api.ascnd.gg:443")
      * @param api_key API key for authentication
      */
-    AscndClient(const std::string& base_url, const std::string& api_key);
+    AscndClient(const std::string& server_address, const std::string& api_key);
 
-    /// Destructor
+    /**
+     * @brief Destructor - blocks until all pending async operations complete
+     *
+     * @note Callback-based async operations are tracked and the destructor
+     *       will wait for them to finish before destroying the client.
+     *       This prevents crashes from callbacks accessing destroyed objects.
+     */
     ~AscndClient();
 
     /// Non-copyable
@@ -178,11 +278,45 @@ public:
     );
 
     // ========================================================================
-    // Asynchronous API
+    // Asynchronous API (Future-based)
     // ========================================================================
 
     /**
      * @brief Submit a score asynchronously
+     * @param request Score submission details
+     * @return Future that will contain the result when complete
+     *
+     * @note The future can be waited on or checked for completion.
+     *       Use .get() to retrieve the result (blocks if not ready).
+     */
+    [[nodiscard]] std::future<Result<SubmitScoreResponse>> submit_score_async(
+        const SubmitScoreRequest& request
+    );
+
+    /**
+     * @brief Get leaderboard entries asynchronously
+     * @param request Leaderboard query parameters
+     * @return Future that will contain the result when complete
+     */
+    [[nodiscard]] std::future<Result<GetLeaderboardResponse>> get_leaderboard_async(
+        const GetLeaderboardRequest& request
+    );
+
+    /**
+     * @brief Get a player's rank asynchronously
+     * @param request Player rank query parameters
+     * @return Future that will contain the result when complete
+     */
+    [[nodiscard]] std::future<Result<GetPlayerRankResponse>> get_player_rank_async(
+        const GetPlayerRankRequest& request
+    );
+
+    // ========================================================================
+    // Asynchronous API (Callback-based)
+    // ========================================================================
+
+    /**
+     * @brief Submit a score asynchronously with callback
      * @param request Score submission details
      * @param callback Callback to invoke with the result
      *
@@ -195,7 +329,7 @@ public:
     );
 
     /**
-     * @brief Get leaderboard entries asynchronously
+     * @brief Get leaderboard entries asynchronously with callback
      * @param request Leaderboard query parameters
      * @param callback Callback to invoke with the result
      */
@@ -205,7 +339,7 @@ public:
     );
 
     /**
-     * @brief Get a player's rank asynchronously
+     * @brief Get a player's rank asynchronously with callback
      * @param request Player rank query parameters
      * @param callback Callback to invoke with the result
      */
@@ -225,14 +359,14 @@ public:
     void set_api_key(const std::string& api_key);
 
     /**
-     * @brief Get the current configuration
-     * @return Current client configuration
+     * @brief Get a copy of the current configuration
+     * @return Copy of current client configuration (thread-safe)
      */
-    [[nodiscard]] const ClientConfig& config() const noexcept;
+    [[nodiscard]] ClientConfig config() const;
 
     /**
      * @brief Test connectivity to the API
-     * @return true if the API is reachable
+     * @return true if the gRPC channel is ready
      */
     [[nodiscard]] bool ping();
 
@@ -240,269 +374,5 @@ private:
     class Impl;
     std::unique_ptr<Impl> impl_;
 };
-
-// ============================================================================
-// Header-Only Implementation
-// ============================================================================
-
-#ifdef ASCND_HEADER_ONLY
-#include <httplib.h>
-#include <thread>
-#include <atomic>
-
-namespace ascnd {
-
-class AscndClient::Impl {
-public:
-    ClientConfig config;
-    std::unique_ptr<httplib::Client> http_client;
-    mutable std::mutex mutex;
-
-    explicit Impl(ClientConfig cfg) : config(std::move(cfg)) {
-        init_client();
-    }
-
-    void init_client() {
-        // Parse URL to extract host
-        std::string url = config.base_url;
-
-        // Remove trailing slash
-        while (!url.empty() && url.back() == '/') {
-            url.pop_back();
-        }
-
-        http_client = std::make_unique<httplib::Client>(url);
-
-        // Configure timeouts
-        http_client->set_connection_timeout(
-            std::chrono::milliseconds(config.connection_timeout_ms)
-        );
-        http_client->set_read_timeout(
-            std::chrono::milliseconds(config.read_timeout_ms)
-        );
-        http_client->set_write_timeout(
-            std::chrono::milliseconds(config.write_timeout_ms)
-        );
-
-        // Set default headers
-        httplib::Headers headers;
-        headers.emplace("Content-Type", "application/json");
-        headers.emplace("Accept", "application/json");
-
-        if (!config.api_key.empty()) {
-            headers.emplace("Authorization", "Bearer " + config.api_key);
-        }
-
-        if (!config.user_agent.empty()) {
-            headers.emplace("User-Agent", config.user_agent);
-        } else {
-            headers.emplace("User-Agent", "ascnd-cpp-client/1.0.0");
-        }
-
-        http_client->set_default_headers(headers);
-    }
-
-    template<typename ResponseT>
-    Result<ResponseT> make_request(
-        const std::string& method,
-        const std::string& path,
-        const json& body = json{}
-    ) {
-        std::lock_guard<std::mutex> lock(mutex);
-
-        httplib::Result result;
-        std::string body_str = body.empty() ? "" : body.dump();
-
-        int retries = 0;
-        while (retries <= config.max_retries) {
-            if (method == "POST") {
-                result = http_client->Post(path, body_str, "application/json");
-            } else if (method == "GET") {
-                result = http_client->Get(path);
-            } else {
-                return Result<ResponseT>::error("Unsupported HTTP method: " + method);
-            }
-
-            if (result) {
-                break;
-            }
-
-            // Retry on connection errors
-            if (retries < config.max_retries) {
-                int delay = config.retry_delay_ms * (1 << retries);
-                std::this_thread::sleep_for(std::chrono::milliseconds(delay));
-            }
-            ++retries;
-        }
-
-        if (!result) {
-            return Result<ResponseT>::error(
-                "HTTP request failed: " + httplib::to_string(result.error()),
-                static_cast<int>(result.error())
-            );
-        }
-
-        auto& response = result.value();
-
-        if (response.status >= 200 && response.status < 300) {
-            try {
-                auto json_response = json::parse(response.body);
-                return Result<ResponseT>::ok(json_response.get<ResponseT>());
-            } catch (const json::exception& e) {
-                return Result<ResponseT>::error(
-                    std::string("JSON parse error: ") + e.what(),
-                    response.status
-                );
-            }
-        }
-
-        // Handle error response
-        std::string error_msg;
-        try {
-            auto error_json = json::parse(response.body);
-            if (error_json.contains("message")) {
-                error_msg = error_json["message"].get<std::string>();
-            } else if (error_json.contains("error")) {
-                error_msg = error_json["error"].get<std::string>();
-            } else {
-                error_msg = response.body;
-            }
-        } catch (...) {
-            error_msg = response.body.empty() ?
-                "HTTP " + std::to_string(response.status) : response.body;
-        }
-
-        return Result<ResponseT>::error(error_msg, response.status);
-    }
-};
-
-inline AscndClient::AscndClient(ClientConfig config)
-    : impl_(std::make_unique<Impl>(std::move(config))) {}
-
-inline AscndClient::AscndClient(const std::string& base_url, const std::string& api_key)
-    : impl_(std::make_unique<Impl>(ClientConfig{base_url, api_key})) {}
-
-inline AscndClient::~AscndClient() = default;
-
-inline AscndClient::AscndClient(AscndClient&&) noexcept = default;
-inline AscndClient& AscndClient::operator=(AscndClient&&) noexcept = default;
-
-inline Result<SubmitScoreResponse> AscndClient::submit_score(const SubmitScoreRequest& request) {
-    json body = request;
-    return impl_->make_request<SubmitScoreResponse>("POST", "/v1/scores", body);
-}
-
-inline Result<GetLeaderboardResponse> AscndClient::get_leaderboard(const GetLeaderboardRequest& request) {
-    std::string path = "/v1/leaderboards/" + request.leaderboard_id;
-    std::string query;
-
-    if (request.limit.has_value()) {
-        query += (query.empty() ? "?" : "&");
-        query += "limit=" + std::to_string(request.limit.value());
-    }
-    if (request.offset.has_value()) {
-        query += (query.empty() ? "?" : "&");
-        query += "offset=" + std::to_string(request.offset.value());
-    }
-    if (request.period.has_value()) {
-        query += (query.empty() ? "?" : "&");
-        query += "period=" + request.period.value();
-    }
-
-    return impl_->make_request<GetLeaderboardResponse>("GET", path + query);
-}
-
-inline Result<GetPlayerRankResponse> AscndClient::get_player_rank(const GetPlayerRankRequest& request) {
-    std::string path = "/v1/leaderboards/" + request.leaderboard_id +
-                       "/players/" + request.player_id;
-
-    if (request.period.has_value()) {
-        path += "?period=" + request.period.value();
-    }
-
-    return impl_->make_request<GetPlayerRankResponse>("GET", path);
-}
-
-inline Result<SubmitScoreResponse> AscndClient::submit_score(
-    const std::string& leaderboard_id,
-    const std::string& player_id,
-    int64_t score
-) {
-    SubmitScoreRequest request;
-    request.leaderboard_id = leaderboard_id;
-    request.player_id = player_id;
-    request.score = score;
-    return submit_score(request);
-}
-
-inline Result<GetLeaderboardResponse> AscndClient::get_leaderboard(
-    const std::string& leaderboard_id,
-    int32_t limit
-) {
-    GetLeaderboardRequest request;
-    request.leaderboard_id = leaderboard_id;
-    request.limit = limit;
-    return get_leaderboard(request);
-}
-
-inline Result<GetPlayerRankResponse> AscndClient::get_player_rank(
-    const std::string& leaderboard_id,
-    const std::string& player_id
-) {
-    GetPlayerRankRequest request;
-    request.leaderboard_id = leaderboard_id;
-    request.player_id = player_id;
-    return get_player_rank(request);
-}
-
-inline void AscndClient::submit_score_async(
-    const SubmitScoreRequest& request,
-    AsyncCallback<SubmitScoreResponse> callback
-) {
-    std::thread([this, request, callback = std::move(callback)]() {
-        auto result = submit_score(request);
-        callback(std::move(result));
-    }).detach();
-}
-
-inline void AscndClient::get_leaderboard_async(
-    const GetLeaderboardRequest& request,
-    AsyncCallback<GetLeaderboardResponse> callback
-) {
-    std::thread([this, request, callback = std::move(callback)]() {
-        auto result = get_leaderboard(request);
-        callback(std::move(result));
-    }).detach();
-}
-
-inline void AscndClient::get_player_rank_async(
-    const GetPlayerRankRequest& request,
-    AsyncCallback<GetPlayerRankResponse> callback
-) {
-    std::thread([this, request, callback = std::move(callback)]() {
-        auto result = get_player_rank(request);
-        callback(std::move(result));
-    }).detach();
-}
-
-inline void AscndClient::set_api_key(const std::string& api_key) {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    impl_->config.api_key = api_key;
-    impl_->init_client();
-}
-
-inline const ClientConfig& AscndClient::config() const noexcept {
-    return impl_->config;
-}
-
-inline bool AscndClient::ping() {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    auto result = impl_->http_client->Get("/health");
-    return result && result->status >= 200 && result->status < 300;
-}
-
-} // namespace ascnd
-
-#endif // ASCND_HEADER_ONLY
 
 } // namespace ascnd

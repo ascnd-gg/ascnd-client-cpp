@@ -1,0 +1,198 @@
+syntax = "proto3";
+
+package ascnd.v1;
+
+// AscndService provides leaderboard management for games.
+service AscndService {
+  // SubmitScore records a player's score on a leaderboard.
+  rpc SubmitScore(SubmitScoreRequest) returns (SubmitScoreResponse);
+
+  // GetLeaderboard retrieves the top scores for a leaderboard.
+  rpc GetLeaderboard(GetLeaderboardRequest) returns (GetLeaderboardResponse);
+
+  // GetPlayerRank retrieves a specific player's rank and score.
+  rpc GetPlayerRank(GetPlayerRankRequest) returns (GetPlayerRankResponse);
+}
+
+// SubmitScoreRequest contains the score submission details.
+message SubmitScoreRequest {
+  // The leaderboard to submit the score to.
+  string leaderboard_id = 1;
+
+  // The player's unique identifier (provided by the game).
+  string player_id = 2;
+
+  // The score value.
+  int64 score = 3;
+
+  // Optional metadata (JSON-encoded game-specific data).
+  optional bytes metadata = 4;
+
+  // Optional idempotency key to prevent duplicate submissions.
+  optional string idempotency_key = 5;
+}
+
+// SubmitScoreResponse contains the result of the score submission.
+message SubmitScoreResponse {
+  // The unique identifier of the submitted score.
+  string score_id = 1;
+
+  // The player's rank after this submission.
+  int32 rank = 2;
+
+  // Whether this is the player's new best score for this period.
+  bool is_new_best = 3;
+
+  // Whether the score was deduplicated (already submitted recently).
+  bool was_deduplicated = 4;
+
+  // Anticheat validation result (if anticheat is enabled for this leaderboard).
+  optional AnticheatResult anticheat = 5;
+}
+
+// AnticheatResult contains the result of anticheat validation.
+message AnticheatResult {
+  // Whether the score passed all anticheat checks.
+  bool passed = 1;
+
+  // List of violation flags that were triggered.
+  repeated AnticheatViolation violations = 2;
+
+  // The enforcement action taken: "none", "flag", "shadow_ban", or "reject".
+  string action = 3;
+}
+
+// AnticheatViolation describes a single anticheat rule violation.
+message AnticheatViolation {
+  // The type of violation: "bounds_exceeded", "velocity_exceeded",
+  // "duplicate_idempotency", "missing_idempotency_key".
+  string flag_type = 1;
+
+  // Human-readable description of the violation.
+  string reason = 2;
+}
+
+// GetLeaderboardRequest specifies which leaderboard and page to retrieve.
+message GetLeaderboardRequest {
+  // The leaderboard to retrieve.
+  string leaderboard_id = 1;
+
+  // Maximum number of entries to return (default: 10, max: 100).
+  optional int32 limit = 2;
+
+  // Number of entries to skip for pagination.
+  optional int32 offset = 3;
+
+  // Which period to retrieve: "current", "previous", or a timestamp.
+  optional string period = 4;
+
+  // Optional view slug to filter by metadata criteria.
+  // If provided, returns rankings within the view (not global rank).
+  optional string view_slug = 5;
+}
+
+// GetLeaderboardResponse contains the leaderboard entries.
+message GetLeaderboardResponse {
+  // The leaderboard entries.
+  repeated LeaderboardEntry entries = 1;
+
+  // Approximate total number of entries.
+  int32 total_entries = 2;
+
+  // Whether there are more entries after this page.
+  bool has_more = 3;
+
+  // The start of the current period (ISO 8601 timestamp).
+  string period_start = 4;
+
+  // The end of the current period, if applicable (ISO 8601 timestamp).
+  optional string period_end = 5;
+
+  // Active view info if filtering by view_slug.
+  optional ViewInfo view = 6;
+}
+
+// LeaderboardEntry represents a single entry on the leaderboard.
+message LeaderboardEntry {
+  // The player's rank (1-indexed).
+  int32 rank = 1;
+
+  // The player's unique identifier.
+  string player_id = 2;
+
+  // The player's score.
+  int64 score = 3;
+
+  // When the score was submitted (ISO 8601 timestamp).
+  string submitted_at = 4;
+
+  // Optional metadata associated with the score.
+  optional bytes metadata = 5;
+
+  // Optional bracket assignment for this player.
+  optional BracketInfo bracket = 6;
+}
+
+// BracketInfo contains minimal bracket information.
+message BracketInfo {
+  // The bracket's unique identifier.
+  string id = 1;
+
+  // The bracket's name (e.g., "Gold", "Silver", "Bronze").
+  string name = 2;
+
+  // Optional hex color code (e.g., "#FF5500") for the bracket badge.
+  optional string color = 3;
+}
+
+// ViewInfo contains minimal metadata view information.
+message ViewInfo {
+  // The view's slug identifier.
+  string slug = 1;
+
+  // The view's display name.
+  string name = 2;
+}
+
+// GetPlayerRankRequest specifies which player and leaderboard to query.
+message GetPlayerRankRequest {
+  // The leaderboard to query.
+  string leaderboard_id = 1;
+
+  // The player's unique identifier.
+  string player_id = 2;
+
+  // Which period to query: "current", "previous", or a timestamp.
+  optional string period = 3;
+
+  // Optional view slug to get rank within a filtered view.
+  optional string view_slug = 4;
+}
+
+// GetPlayerRankResponse contains the player's rank information.
+message GetPlayerRankResponse {
+  // The player's rank (null if not on leaderboard).
+  // When querying a view, this is the rank within the view.
+  optional int32 rank = 1;
+
+  // The player's current score (null if not on leaderboard).
+  optional int64 score = 2;
+
+  // The player's best score this period.
+  optional int64 best_score = 3;
+
+  // Total number of entries on this leaderboard (or view if filtered).
+  int32 total_entries = 4;
+
+  // The player's percentile (e.g., "top 5%").
+  optional string percentile = 5;
+
+  // Optional bracket assignment for this player.
+  optional BracketInfo bracket = 6;
+
+  // Active view info if querying with view_slug.
+  optional ViewInfo view = 7;
+
+  // Global rank when querying a view (shows overall position).
+  optional int32 global_rank = 8;
+}

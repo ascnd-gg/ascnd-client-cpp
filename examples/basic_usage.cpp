@@ -1,6 +1,6 @@
 /**
  * @file basic_usage.cpp
- * @brief Example demonstrating basic usage of the Ascnd C++ client
+ * @brief Example demonstrating basic usage of the Ascnd C++ gRPC client
  *
  * This example shows how to:
  * - Initialize the client
@@ -30,19 +30,19 @@ void example_sync_operations(ascnd::AscndClient& client) {
     std::cout << "Submitting score..." << std::endl;
 
     ascnd::SubmitScoreRequest submit_req;
-    submit_req.leaderboard_id = "high-scores";
-    submit_req.player_id = "player_001";
-    submit_req.score = 15000;
-    submit_req.metadata = R"({"level": 5, "character": "warrior"})";
+    submit_req.set_leaderboard_id("high-scores");
+    submit_req.set_player_id("player_001");
+    submit_req.set_score(15000);
+    submit_req.set_metadata(R"({"level": 5, "character": "warrior"})");
 
     auto submit_result = client.submit_score(submit_req);
 
     if (submit_result.is_ok()) {
-        auto& response = submit_result.value();
+        const auto& response = submit_result.value();
         std::cout << "Score submitted successfully!" << std::endl;
-        std::cout << "  Score ID: " << response.score_id << std::endl;
-        std::cout << "  Rank: " << response.rank << std::endl;
-        std::cout << "  New best: " << (response.is_new_best ? "Yes" : "No") << std::endl;
+        std::cout << "  Score ID: " << response.score_id() << std::endl;
+        std::cout << "  Rank: " << response.rank() << std::endl;
+        std::cout << "  New best: " << (response.is_new_best() ? "Yes" : "No") << std::endl;
     } else {
         std::cerr << "Failed to submit score: " << submit_result.error() << std::endl;
         std::cerr << "  Error code: " << submit_result.error_code() << std::endl;
@@ -54,17 +54,17 @@ void example_sync_operations(ascnd::AscndClient& client) {
     std::cout << "Fetching leaderboard..." << std::endl;
 
     ascnd::GetLeaderboardRequest leaderboard_req;
-    leaderboard_req.leaderboard_id = "high-scores";
-    leaderboard_req.limit = 10;
+    leaderboard_req.set_leaderboard_id("high-scores");
+    leaderboard_req.set_limit(10);
 
     auto leaderboard_result = client.get_leaderboard(leaderboard_req);
 
     if (leaderboard_result.is_ok()) {
-        auto& response = leaderboard_result.value();
-        std::cout << "Leaderboard retrieved! (" << response.total_entries << " total entries)" << std::endl;
-        std::cout << "Period: " << response.period_start;
-        if (response.period_end.has_value()) {
-            std::cout << " to " << response.period_end.value();
+        const auto& response = leaderboard_result.value();
+        std::cout << "Leaderboard retrieved! (" << response.total_entries() << " total entries)" << std::endl;
+        std::cout << "Period: " << response.period_start();
+        if (response.has_period_end()) {
+            std::cout << " to " << response.period_end();
         }
         std::cout << std::endl << std::endl;
 
@@ -74,14 +74,14 @@ void example_sync_operations(ascnd::AscndClient& client) {
                   << std::endl;
         std::cout << std::string(38, '-') << std::endl;
 
-        for (const auto& entry : response.entries) {
-            std::cout << std::setw(6) << entry.rank
-                      << std::setw(20) << entry.player_id
-                      << std::setw(12) << entry.score
+        for (const auto& entry : response.entries()) {
+            std::cout << std::setw(6) << entry.rank()
+                      << std::setw(20) << entry.player_id()
+                      << std::setw(12) << entry.score()
                       << std::endl;
         }
 
-        if (response.has_more) {
+        if (response.has_more()) {
             std::cout << "... and more entries available" << std::endl;
         }
     } else {
@@ -96,20 +96,20 @@ void example_sync_operations(ascnd::AscndClient& client) {
     auto rank_result = client.get_player_rank("high-scores", "player_001");
 
     if (rank_result.is_ok()) {
-        auto& response = rank_result.value();
-        if (response.rank.has_value()) {
+        const auto& response = rank_result.value();
+        if (response.has_rank()) {
             std::cout << "Player ranking:" << std::endl;
-            std::cout << "  Rank: " << response.rank.value() << std::endl;
-            if (response.score.has_value()) {
-                std::cout << "  Score: " << response.score.value() << std::endl;
+            std::cout << "  Rank: " << response.rank() << std::endl;
+            if (response.has_score()) {
+                std::cout << "  Score: " << response.score() << std::endl;
             }
-            if (response.best_score.has_value()) {
-                std::cout << "  Best score: " << response.best_score.value() << std::endl;
+            if (response.has_best_score()) {
+                std::cout << "  Best score: " << response.best_score() << std::endl;
             }
-            if (response.percentile.has_value()) {
-                std::cout << "  Percentile: " << response.percentile.value() << std::endl;
+            if (response.has_percentile()) {
+                std::cout << "  Percentile: " << response.percentile() << std::endl;
             }
-            std::cout << "  Total players: " << response.total_entries << std::endl;
+            std::cout << "  Total players: " << response.total_entries() << std::endl;
         } else {
             std::cout << "Player not found on this leaderboard." << std::endl;
         }
@@ -125,23 +125,23 @@ void example_convenience_methods(ascnd::AscndClient& client) {
     // Quick score submission
     auto result = client.submit_score("daily-challenge", "player_002", 8500);
     if (result.is_ok()) {
-        std::cout << "Quick submit - Rank: " << result.value().rank << std::endl;
+        std::cout << "Quick submit - Rank: " << result.value().rank() << std::endl;
     }
 
     // Quick leaderboard fetch (top 5)
     auto leaderboard = client.get_leaderboard("daily-challenge", 5);
     if (leaderboard.is_ok()) {
         std::cout << "Top 5 on daily-challenge:" << std::endl;
-        for (const auto& entry : leaderboard.value().entries) {
-            std::cout << "  #" << entry.rank << " " << entry.player_id
-                      << " - " << entry.score << std::endl;
+        for (const auto& entry : leaderboard.value().entries()) {
+            std::cout << "  #" << entry.rank() << " " << entry.player_id()
+                      << " - " << entry.score() << std::endl;
         }
     }
 
     // Quick rank check
     auto rank = client.get_player_rank("daily-challenge", "player_002");
-    if (rank.is_ok() && rank.value().rank.has_value()) {
-        std::cout << "Player 002 is ranked #" << rank.value().rank.value() << std::endl;
+    if (rank.is_ok() && rank.value().has_rank()) {
+        std::cout << "Player 002 is ranked #" << rank.value().rank() << std::endl;
     }
 }
 
@@ -153,13 +153,13 @@ void example_async_operations(ascnd::AscndClient& client) {
 
     // Async score submission
     ascnd::SubmitScoreRequest submit_req;
-    submit_req.leaderboard_id = "async-test";
-    submit_req.player_id = "async_player";
-    submit_req.score = 12345;
+    submit_req.set_leaderboard_id("async-test");
+    submit_req.set_player_id("async_player");
+    submit_req.set_score(12345);
 
     client.submit_score_async(submit_req, [&pending_ops](ascnd::Result<ascnd::SubmitScoreResponse> result) {
         if (result.is_ok()) {
-            std::cout << "[Async] Score submitted, rank: " << result.value().rank << std::endl;
+            std::cout << "[Async] Score submitted, rank: " << result.value().rank() << std::endl;
         } else {
             std::cerr << "[Async] Submit failed: " << result.error() << std::endl;
         }
@@ -168,13 +168,13 @@ void example_async_operations(ascnd::AscndClient& client) {
 
     // Async leaderboard fetch
     ascnd::GetLeaderboardRequest leaderboard_req;
-    leaderboard_req.leaderboard_id = "async-test";
-    leaderboard_req.limit = 5;
+    leaderboard_req.set_leaderboard_id("async-test");
+    leaderboard_req.set_limit(5);
 
     client.get_leaderboard_async(leaderboard_req, [&pending_ops](ascnd::Result<ascnd::GetLeaderboardResponse> result) {
         if (result.is_ok()) {
             std::cout << "[Async] Leaderboard fetched, "
-                      << result.value().entries.size() << " entries" << std::endl;
+                      << result.value().entries_size() << " entries" << std::endl;
         } else {
             std::cerr << "[Async] Leaderboard failed: " << result.error() << std::endl;
         }
@@ -183,12 +183,12 @@ void example_async_operations(ascnd::AscndClient& client) {
 
     // Async rank check
     ascnd::GetPlayerRankRequest rank_req;
-    rank_req.leaderboard_id = "async-test";
-    rank_req.player_id = "async_player";
+    rank_req.set_leaderboard_id("async-test");
+    rank_req.set_player_id("async_player");
 
     client.get_player_rank_async(rank_req, [&pending_ops](ascnd::Result<ascnd::GetPlayerRankResponse> result) {
-        if (result.is_ok() && result.value().rank.has_value()) {
-            std::cout << "[Async] Player rank: " << result.value().rank.value() << std::endl;
+        if (result.is_ok() && result.value().has_rank()) {
+            std::cout << "[Async] Player rank: " << result.value().rank() << std::endl;
         } else if (result.is_error()) {
             std::cerr << "[Async] Rank check failed: " << result.error() << std::endl;
         }
@@ -215,14 +215,14 @@ void example_error_handling(ascnd::AscndClient& client) {
     if (result.is_error()) {
         std::cout << "Expected error occurred:" << std::endl;
         std::cout << "  Message: " << result.error() << std::endl;
-        std::cout << "  HTTP Code: " << result.error_code() << std::endl;
+        std::cout << "  gRPC Code: " << result.error_code() << std::endl;
 
-        // Check specific error codes
-        if (result.error_code() == 404) {
+        // Check specific gRPC error codes
+        if (result.error_code() == 5) { // NOT_FOUND
             std::cout << "  -> Leaderboard not found" << std::endl;
-        } else if (result.error_code() == 401) {
+        } else if (result.error_code() == 16) { // UNAUTHENTICATED
             std::cout << "  -> Authentication failed" << std::endl;
-        } else if (result.error_code() == 429) {
+        } else if (result.error_code() == 8) { // RESOURCE_EXHAUSTED
             std::cout << "  -> Rate limited, try again later" << std::endl;
         }
     }
@@ -230,12 +230,11 @@ void example_error_handling(ascnd::AscndClient& client) {
     // Using value_or for defaults
     auto safe_result = client.get_leaderboard("maybe-exists");
     ascnd::GetLeaderboardResponse default_response;
-    default_response.total_entries = 0;
-    default_response.has_more = false;
+    // Note: protobuf messages have default values already
 
-    auto response = safe_result.is_ok() ?
+    const auto& response = safe_result.is_ok() ?
         safe_result.value() : default_response;
-    std::cout << "Total entries (with fallback): " << response.total_entries << std::endl;
+    std::cout << "Total entries (with fallback): " << response.total_entries() << std::endl;
 }
 
 // Example 5: Configuration
@@ -244,11 +243,11 @@ void example_configuration() {
 
     // Full configuration
     ascnd::ClientConfig config;
-    config.base_url = "https://api.ascnd.gg";
+    config.server_address = "api.ascnd.gg:443";
     config.api_key = "your-api-key-here";
+    config.use_ssl = true;
     config.connection_timeout_ms = 3000;
-    config.read_timeout_ms = 5000;
-    config.write_timeout_ms = 5000;
+    config.request_timeout_ms = 5000;
     config.max_retries = 3;
     config.retry_delay_ms = 100;
     config.user_agent = "MyGame/1.0.0";
@@ -257,8 +256,9 @@ void example_configuration() {
     ascnd::AscndClient configured_client(config);
 
     std::cout << "Client configured with:" << std::endl;
-    std::cout << "  Base URL: " << configured_client.config().base_url << std::endl;
-    std::cout << "  Timeout: " << configured_client.config().connection_timeout_ms << "ms" << std::endl;
+    std::cout << "  Server: " << configured_client.config().server_address << std::endl;
+    std::cout << "  SSL: " << (configured_client.config().use_ssl ? "enabled" : "disabled") << std::endl;
+    std::cout << "  Timeout: " << configured_client.config().request_timeout_ms << "ms" << std::endl;
     std::cout << "  Max retries: " << configured_client.config().max_retries << std::endl;
 
     // Update API key at runtime
@@ -267,28 +267,28 @@ void example_configuration() {
 }
 
 int main(int argc, char* argv[]) {
-    std::cout << "Ascnd C++ Client - Basic Usage Examples" << std::endl;
-    std::cout << "========================================" << std::endl;
+    std::cout << "Ascnd C++ gRPC Client - Basic Usage Examples" << std::endl;
+    std::cout << "=============================================" << std::endl;
 
     // Get API configuration from environment or command line
-    std::string base_url = "https://api.ascnd.gg";
+    std::string server_address = "api.ascnd.gg:443";
     std::string api_key = "demo-api-key";
 
     if (argc >= 3) {
-        base_url = argv[1];
+        server_address = argv[1];
         api_key = argv[2];
-    } else if (const char* env_url = std::getenv("ASCND_API_URL")) {
-        base_url = env_url;
+    } else if (const char* env_addr = std::getenv("ASCND_SERVER_ADDRESS")) {
+        server_address = env_addr;
     }
 
     if (const char* env_key = std::getenv("ASCND_API_KEY")) {
         api_key = env_key;
     }
 
-    std::cout << "Using API: " << base_url << std::endl;
+    std::cout << "Using server: " << server_address << std::endl;
 
     // Create client
-    ascnd::AscndClient client(base_url, api_key);
+    ascnd::AscndClient client(server_address, api_key);
 
     // Test connectivity
     std::cout << "Testing connection... ";

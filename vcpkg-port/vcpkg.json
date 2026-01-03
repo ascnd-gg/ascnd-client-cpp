@@ -6,19 +6,11 @@
   "license": "MIT",
   "supports": "!uwp",
   "dependencies": [
-    "nlohmann-json",
     {
-      "name": "cpp-httplib",
-      "features": ["openssl"],
-      "platform": "!windows"
+      "name": "grpc",
+      "default-features": false
     },
-    {
-      "name": "cpp-httplib",
-      "platform": "windows"
-    },
-    {
-      "name": "openssl",
-      "platform": "!windows"
-    }
+    "protobuf",
+    "glog"
   ]
 }

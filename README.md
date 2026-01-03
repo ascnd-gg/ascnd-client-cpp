@@ -5,12 +5,15 @@ A modern C++17 client library for the [Ascnd](https://ascnd.gg) leaderboard API.
 ## Features
 
 - **C++17 compatible** - Works with most game engines and build systems
-- **Header-only option** - Easy integration, no separate compilation needed
+- **gRPC + Protobuf** - Type-safe API with generated protobuf types
 - **Thread-safe** - All operations are thread-safe by default
 - **Async support** - Non-blocking operations with callbacks
-- **Minimal dependencies** - Only nlohmann/json and cpp-httplib (both header-only)
 - **Automatic retries** - Built-in retry logic with exponential backoff
 - **Error handling** - Result type for safe error handling (no exceptions required)
+- **Anticheat** - Server-side anticheat validation with violation reporting
+- **Brackets** - Player skill bracket assignment with colors
+- **Metadata Views** - Query scores with custom metadata projections
+- **Global Rank** - Track player ranking across all time
 
 ## Quick Start
 
@@ -20,13 +23,21 @@ A modern C++17 client library for the [Ascnd](https://ascnd.gg) leaderboard API.
 
 int main() {
     // Create client
-    ascnd::AscndClient client("https://api.ascnd.gg", "your-api-key");
+    ascnd::AscndClient client("api.ascnd.gg:443", "your-api-key");
 
-    // Submit a score
-    auto result = client.submit_score("high-scores", "player123", 15000);
+    // Build a submit score request using protobuf setters
+    ascnd::SubmitScoreRequest req;
+    req.set_leaderboard_id("high-scores");
+    req.set_player_id("player123");
+    req.set_score(15000);
+
+    // Submit the score
+    auto result = client.submit_score(req);
 
     if (result.is_ok()) {
-        std::cout << "Rank: " << result.value().rank << std::endl;
+        const auto& response = result.value();
+        std::cout << "Rank: " << response.rank() << std::endl;
+        std::cout << "New best: " << response.is_new_best() << std::endl;
     } else {
         std::cerr << "Error: " << result.error() << std::endl;
     }
@@ -71,10 +82,22 @@ Add to your `CMakeLists.txt`:
 
 ```cmake
 include(FetchContent)
+
+# Fetch gRPC and Protobuf
+FetchContent_Declare(
+    grpc
+    GIT_REPOSITORY https://github.com/grpc/grpc.git
+    GIT_TAG v1.60.0
+)
+set(gRPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(gRPC_BUILD_GRPC_PYTHON_PLUGIN OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(grpc)
+
+# Fetch Ascnd client
 FetchContent_Declare(
     ascnd-client
     GIT_REPOSITORY https://github.com/ascnd-gg/ascnd-client-cpp.git
-    GIT_TAG v1.0.0
+    GIT_TAG v2.0.0
 )
 FetchContent_MakeAvailable(ascnd-client)
 
@@ -84,9 +107,12 @@ target_link_libraries(your_target PRIVATE ascnd-client)
 ### Option 2: vcpkg
 
 ```bash
+# Install dependencies
+vcpkg install grpc protobuf
+
 # Add to vcpkg.json
 {
-    "dependencies": ["ascnd-client"]
+    "dependencies": ["ascnd-client", "grpc", "protobuf"]
 }
 
 # Or install directly
@@ -95,13 +121,12 @@ vcpkg install ascnd-client
 
 ### Option 3: Manual Integration
 
-1. Copy the `include/ascnd` directory to your project
-2. Add the include path to your build system
-3. Ensure nlohmann/json and cpp-httplib are available
-4. For header-only mode, define `ASCND_HEADER_ONLY` before including
+1. Install gRPC and Protobuf on your system
+2. Copy the `include/ascnd` directory to your project
+3. Generate protobuf types from `.proto` files or use pre-generated headers
+4. Add the include path to your build system
 
 ```cpp
-#define ASCND_HEADER_ONLY
 #include <ascnd/client.hpp>
 ```
 
@@ -109,7 +134,7 @@ vcpkg install ascnd-client
 
 ```bash
 mkdir build && cd build
-cmake .. -DASCND_HEADER_ONLY=OFF
+cmake .. -DASCND_BUILD_STATIC=ON
 cmake --build .
 cmake --install . --prefix /usr/local
 ```
@@ -118,12 +143,13 @@ cmake --install . --prefix /usr/local
 
 - CMake 3.16+
 - C++17 compatible compiler
-- OpenSSL (optional, for HTTPS support)
+- gRPC 1.50+
+- Protobuf 3.20+
 
-### Dependencies (automatically fetched)
+### Dependencies
 
-- [nlohmann/json](https://github.com/nlohmann/json) v3.11+ (header-only)
-- [cpp-httplib](https://github.com/yhirose/cpp-httplib) v0.15+ (header-only)
+- [gRPC](https://github.com/grpc/grpc) v1.50+
+- [Protobuf](https://github.com/protocolbuffers/protobuf) v3.20+
 
 ## Usage Guide
 
@@ -131,12 +157,10 @@ cmake --install . --prefix /usr/local
 
 ```cpp
 ascnd::ClientConfig config;
-config.base_url = "https://api.ascnd.gg";
+config.server_address = "api.ascnd.gg:443";
 config.api_key = "your-api-key";
-config.connection_timeout_ms = 5000;
-config.read_timeout_ms = 10000;
-config.max_retries = 3;
-config.user_agent = "MyGame/1.0.0";
+config.use_ssl = true;
+config.request_timeout_ms = 10000;
 
 ascnd::AscndClient client(config);
 ```
@@ -144,47 +168,43 @@ ascnd::AscndClient client(config);
 ### Submitting Scores
 
 ```cpp
-// Simple submission
-auto result = client.submit_score("leaderboard-id", "player-id", 1000);
+// Build request with protobuf setters
+ascnd::SubmitScoreRequest req;
+req.set_leaderboard_id("high-scores");
+req.set_player_id("player123");
+req.set_score(15000);
+req.set_metadata(R"({"level": 5, "character": "warrior"})");
+req.set_idempotency_key("unique-key-123");
 
-// With metadata and idempotency key
-ascnd::SubmitScoreRequest request;
-request.leaderboard_id = "high-scores";
-request.player_id = "player123";
-request.score = 15000;
-request.metadata = R"({"level": 5, "character": "warrior"})";
-request.idempotency_key = "unique-key-123";
-
-auto result = client.submit_score(request);
+auto result = client.submit_score(req);
 
 if (result.is_ok()) {
-    auto& response = result.value();
-    std::cout << "Score ID: " << response.score_id << std::endl;
-    std::cout << "Rank: " << response.rank << std::endl;
-    std::cout << "New best: " << response.is_new_best << std::endl;
+    const auto& response = result.value();
+    std::cout << "Score ID: " << response.score_id() << std::endl;
+    std::cout << "Rank: " << response.rank() << std::endl;
+    std::cout << "New best: " << response.is_new_best() << std::endl;
+    std::cout << "Global rank: " << response.global_rank() << std::endl;
 }
 ```
 
 ### Getting Leaderboards
 
 ```cpp
-// Simple query
-auto result = client.get_leaderboard("high-scores", 10);
+// Build request with pagination
+ascnd::GetLeaderboardRequest req;
+req.set_leaderboard_id("high-scores");
+req.set_limit(25);
+req.set_offset(50);
+req.set_period("current");
 
-// With pagination
-ascnd::GetLeaderboardRequest request;
-request.leaderboard_id = "high-scores";
-request.limit = 25;
-request.offset = 50;
-request.period = "current";
-
-auto result = client.get_leaderboard(request);
+auto result = client.get_leaderboard(req);
 
 if (result.is_ok()) {
-    for (const auto& entry : result.value().entries) {
-        std::cout << "#" << entry.rank << " "
-                  << entry.player_id << " - "
-                  << entry.score << std::endl;
+    const auto& response = result.value();
+    for (const auto& entry : response.entries()) {
+        std::cout << "#" << entry.rank() << " "
+                  << entry.player_id() << " - "
+                  << entry.score() << std::endl;
     }
 }
 ```
@@ -192,16 +212,109 @@ if (result.is_ok()) {
 ### Getting Player Rank
 
 ```cpp
-auto result = client.get_player_rank("high-scores", "player123");
+ascnd::GetPlayerRankRequest req;
+req.set_leaderboard_id("high-scores");
+req.set_player_id("player123");
+
+auto result = client.get_player_rank(req);
 
 if (result.is_ok()) {
-    auto& response = result.value();
-    if (response.rank.has_value()) {
-        std::cout << "Rank: " << response.rank.value() << std::endl;
-        std::cout << "Percentile: " << response.percentile.value_or("N/A") << std::endl;
+    const auto& response = result.value();
+    if (response.has_rank()) {
+        std::cout << "Rank: " << response.rank() << std::endl;
+        std::cout << "Percentile: " << response.percentile() << std::endl;
     } else {
         std::cout << "Player not on leaderboard" << std::endl;
     }
+}
+```
+
+### Anticheat
+
+The SDK includes server-side anticheat validation. Check the anticheat result after submitting a score:
+
+```cpp
+auto result = client.submit_score(req);
+
+if (result.is_ok()) {
+    const auto& response = result.value();
+
+    // Check if anticheat validation passed
+    if (response.anticheat().passed()) {
+        std::cout << "Score validated successfully" << std::endl;
+    } else {
+        std::cout << "Anticheat flagged this score" << std::endl;
+
+        // Check for specific violations
+        for (const auto& violation : response.anticheat().violations()) {
+            std::cout << "Violation: " << violation.code() << " - "
+                      << violation.message() << std::endl;
+        }
+    }
+}
+```
+
+### Brackets
+
+Players are automatically assigned to skill brackets based on their performance:
+
+```cpp
+auto result = client.get_leaderboard(req);
+
+if (result.is_ok()) {
+    for (const auto& entry : result.value().entries()) {
+        std::cout << entry.player_id() << " - Bracket: "
+                  << entry.bracket().name() << std::endl;
+
+        // Get bracket color for UI display
+        std::cout << "Color: " << entry.bracket().color() << std::endl;
+    }
+}
+```
+
+### Metadata Views
+
+Query scores with custom metadata projections using view slugs:
+
+```cpp
+ascnd::GetLeaderboardRequest req;
+req.set_leaderboard_id("high-scores");
+req.set_view_slug("weekly-character-stats");
+
+auto result = client.get_leaderboard(req);
+
+if (result.is_ok()) {
+    const auto& response = result.value();
+
+    // Check if the view was applied
+    if (response.has_view()) {
+        std::cout << "Using view: " << response.view().name() << std::endl;
+    }
+
+    for (const auto& entry : response.entries()) {
+        std::cout << entry.player_id() << " - "
+                  << entry.score() << std::endl;
+        std::cout << "Metadata: " << entry.metadata() << std::endl;
+    }
+}
+```
+
+### Global Rank
+
+Track a player's all-time global ranking:
+
+```cpp
+ascnd::SubmitScoreRequest req;
+req.set_leaderboard_id("high-scores");
+req.set_player_id("player123");
+req.set_score(25000);
+
+auto result = client.submit_score(req);
+
+if (result.is_ok()) {
+    const auto& response = result.value();
+    std::cout << "Period rank: " << response.rank() << std::endl;
+    std::cout << "Global rank: " << response.global_rank() << std::endl;
 }
 ```
 
@@ -209,15 +322,15 @@ if (result.is_ok()) {
 
 ```cpp
 // Non-blocking score submission
-client.submit_score_async(request, [](ascnd::Result<ascnd::SubmitScoreResponse> result) {
+client.submit_score_async(req, [](ascnd::Result<ascnd::SubmitScoreResponse> result) {
     if (result.is_ok()) {
         // Update UI on main thread
-        std::cout << "Rank: " << result.value().rank << std::endl;
+        std::cout << "Rank: " << result.value().rank() << std::endl;
     }
 });
 
 // Non-blocking leaderboard fetch
-client.get_leaderboard_async(request, [](ascnd::Result<ascnd::GetLeaderboardResponse> result) {
+client.get_leaderboard_async(req, [](ascnd::Result<ascnd::GetLeaderboardResponse> result) {
     if (result.is_ok()) {
         // Process leaderboard data
     }
@@ -227,19 +340,19 @@ client.get_leaderboard_async(request, [](ascnd::Result<ascnd::GetLeaderboardResp
 ### Error Handling
 
 ```cpp
-auto result = client.submit_score("leaderboard", "player", 1000);
+auto result = client.submit_score(req);
 
 if (result.is_error()) {
     std::cerr << "Error: " << result.error() << std::endl;
 
     switch (result.error_code()) {
-        case 401:
+        case grpc::StatusCode::UNAUTHENTICATED:
             // Invalid API key
             break;
-        case 404:
+        case grpc::StatusCode::NOT_FOUND:
             // Leaderboard not found
             break;
-        case 429:
+        case grpc::StatusCode::RESOURCE_EXHAUSTED:
             // Rate limited
             break;
         default:
@@ -249,7 +362,7 @@ if (result.is_error()) {
 }
 
 // Or use value_or for defaults
-auto score = result.value_or(default_response);
+auto response = result.value_or(default_response);
 ```
 
 ## Links
