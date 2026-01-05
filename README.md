@@ -1,5 +1,8 @@
 # Ascnd C++ Client
 
+> [!WARNING]
+> This project is under active development. Expect bugs. Please report issues via the [issue tracker](../../issues).
+
 A modern C++17 client library for the [Ascnd](https://ascnd.gg) leaderboard API. Designed for game engines like Unreal Engine and custom C++ game projects.
 
 ## Features
