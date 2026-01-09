@@ -1,5 +1,11 @@
 # ascnd-client Changelog
 
+## 1.1.1
+
+### Fixed
+
+- Re-release to correct publishing issue with v1.1.0
+
 ## 1.0.0
 
 ### Initial Release
