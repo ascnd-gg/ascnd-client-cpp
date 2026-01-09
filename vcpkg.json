@@ -1,6 +1,6 @@
 {
   "name": "ascnd-client",
-  "version-semver": "1.0.0",
+  "version-semver": "1.1.0",
   "description": "C++ client library for the Ascnd leaderboard API",
   "dependencies": [
     {

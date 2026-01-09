@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(ascnd-client
-    VERSION 1.0.0
+    VERSION 1.1.0
     DESCRIPTION "C++ client library for the Ascnd leaderboard API"
     HOMEPAGE_URL "https://github.com/ascnd-gg/ascnd-client-cpp"
     LANGUAGES CXX
