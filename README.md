@@ -201,11 +201,10 @@ if (result.is_ok()) {
 ### Getting Leaderboards
 
 ```cpp
-// Build request with pagination and optional view filtering
+// Build request with cursor-based pagination and optional view filtering
 ascnd::GetLeaderboardRequest req;
 req.set_leaderboard_id("high-scores");
 req.set_limit(25);
-req.set_offset(0);
 req.set_period("current");
 req.set_view_slug("na-region");  // Optional: filter by metadata view
 
@@ -232,6 +231,75 @@ if (result.is_ok()) {
             std::cout << "  Bracket: " << entry.bracket().name()
                       << " (" << entry.bracket().color() << ")" << std::endl;
         }
+    }
+
+    // Check if more pages are available
+    if (response.has_more()) {
+        std::cout << "Next cursor: " << response.next_cursor() << std::endl;
+    }
+}
+```
+
+#### Cursor-Based Pagination
+
+Use cursor-based pagination to efficiently iterate through large leaderboards:
+
+```cpp
+ascnd::GetLeaderboardRequest req;
+req.set_leaderboard_id("high-scores");
+req.set_limit(25);
+
+std::string cursor;
+
+do {
+    // Set cursor for subsequent pages (empty for first page)
+    if (!cursor.empty()) {
+        req.set_cursor(cursor);
+    }
+
+    auto result = client.get_leaderboard(req);
+    if (result.is_error()) break;
+
+    const auto& response = result.value();
+
+    for (const auto& entry : response.entries()) {
+        std::cout << "#" << entry.rank() << " "
+                  << entry.player_id() << " - "
+                  << entry.score() << std::endl;
+    }
+
+    // Get cursor for next page
+    cursor = response.has_more() ? response.next_cursor() : "";
+
+} while (!cursor.empty());
+```
+
+#### Jump to Specific Rank Position
+
+Use `around_rank` to fetch entries centered around a specific rank position:
+
+```cpp
+ascnd::GetLeaderboardRequest req;
+req.set_leaderboard_id("high-scores");
+req.set_limit(25);
+req.set_around_rank(100);  // Jump to entries around rank 100
+
+auto result = client.get_leaderboard(req);
+
+if (result.is_ok()) {
+    const auto& response = result.value();
+
+    // Entries will be centered around rank 100
+    for (const auto& entry : response.entries()) {
+        std::cout << "#" << entry.rank() << " "
+                  << entry.player_id() << " - "
+                  << entry.score() << std::endl;
+    }
+
+    // Continue paginating from here using the cursor
+    if (response.has_more()) {
+        std::string next_cursor = response.next_cursor();
+        // Use next_cursor for subsequent requests
     }
 }
 ```
